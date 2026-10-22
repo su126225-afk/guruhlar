@@ -30,6 +30,9 @@ create table if not exists mg_students (
   created_at   timestamptz not null default now()
 );
 
+-- Muzlatish tarixi: [{"from":"2026-10-01","to":"2026-11-01"}], oxirgisida "to" bo'lmasa hozir muzlatilgan
+alter table mg_students add column if not exists freezes jsonb not null default '[]'::jsonb;
+
 create table if not exists mg_lessons (
   id        uuid primary key default gen_random_uuid(),
   group_id  uuid not null references mg_groups(id) on delete cascade,
@@ -82,7 +85,7 @@ begin
   if not found then return null; end if;
   select * into g from mg_groups where id = s.group_id;
   r := jsonb_build_object(
-    'student', jsonb_build_object('id', s.id, 'name', s.name, 'joined', s.joined, 'price', s.price),
+    'student', jsonb_build_object('id', s.id, 'name', s.name, 'joined', s.joined, 'price', s.price, 'freezes', s.freezes),
     'group',   case when g.id is null then null else jsonb_build_object('name', g.name, 'price', g.price, 'days', g.days, 'time', g.time, 'pay_day', g.pay_day) end,
     'attendance', coalesce((select jsonb_agg(jsonb_build_object('day', a.day, 'status', a.status) order by a.day desc)
                             from mg_attendance a where a.student_id = s.id and a.day >= current_date - 150), '[]'::jsonb),

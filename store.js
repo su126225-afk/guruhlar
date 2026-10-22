@@ -42,6 +42,10 @@ const local = {
     if (i >= 0) all[i] = r; else all.push(r);
     LS.set(t, all); return r;
   },
+  async saveMany(t, recs) {
+    const all = LS.get(t, []), now = new Date().toISOString(), out = recs.map(r => ({ ...r, id: r.id || uid(), created_at: r.created_at || now }));
+    LS.set(t, all.concat(out)); return out;
+  },
   async remove(t, id) {
     LS.set(t, LS.get(t, []).filter(x => x.id !== id));
     if (t === 'students') { LS.set('attendance', LS.get('attendance', []).filter(x => x.student_id !== id)); LS.set('payments', LS.get('payments', []).filter(x => x.student_id !== id)); }
@@ -63,7 +67,7 @@ const local = {
     if (!s) return null;
     const g = LS.get('groups', []).find(x => x.id === s.group_id);
     return {
-      student: { id: s.id, name: s.name, joined: s.joined, price: s.price },
+      student: { id: s.id, name: s.name, joined: s.joined, price: s.price, freezes: s.freezes || [] },
       group: g ? { name: g.name, price: g.price, days: g.days, time: g.time, pay_day: g.pay_day } : null,
       attendance: LS.get('attendance', []).filter(a => a.student_id === s.id).sort((a, b) => b.day.localeCompare(a.day)),
       payments: LS.get('payments', []).filter(p => p.student_id === s.id).sort((a, b) => b.paid_on.localeCompare(a.paid_on)),
@@ -98,6 +102,10 @@ async function makeCloud() {
       return out;
     },
     async save(t, rec) { const r = { ...rec }; if (!r.id) delete r.id; return ok(sb.from(T(t)).upsert(r).select().single()); },
+    async saveMany(t, recs) {
+      const out = []; for (let i = 0; i < recs.length; i += 200) out.push(...await ok(sb.from(T(t)).insert(recs.slice(i, i + 200)).select()));
+      return out;
+    },
     async remove(t, id) { await ok(sb.from(T(t)).delete().eq('id', id)); },
     async saveAttendance(recs) { if (recs.length) await ok(sb.from('mg_attendance').upsert(recs, { onConflict: 'student_id,day' })); },
     async delAttendance(student_id, day) { await ok(sb.from('mg_attendance').delete().eq('student_id', student_id).eq('day', day)); },

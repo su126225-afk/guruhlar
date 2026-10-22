@@ -6,17 +6,19 @@ import { $, $$, actions, inputs, go, icon, toast, modal, closeModal, confirmBox,
 const { esc, money, monthLabel, fmtDate } = L;
 
 // ───────── ma'lumot keshi ─────────
-let D = null;
+let D = null, stale = true;
 async function load(force) {
-  if (D && !force) return D;
+  if (D && !force && !stale) return D;
   const names = ['groups', 'students', 'lessons', 'attendance', 'payments'];
   const r = await Promise.all(names.map(t => store.list(t)));
-  D = Object.fromEntries(names.map((n, i) => [n, r[i]]));
+  D = Object.fromEntries(names.map((n, i) => [n, r[i]])); stale = false;
   return D;
 }
-const invalidate = () => { D = null; };
+const invalidate = () => { stale = true; };   // D ni null qilmaymiz: bir vaqtda ishlayotgan boshqa amallar xato qilmasin
 const gmap = () => new Map(D.groups.map(g => [g.id, g]));
 const smap = () => new Map(D.students.map(s => [s.id, s]));
+/** Shu oy davomat jadvaliga kiradigan o'quvchilar: faol va oyni to'liq muzlatib o'tmagan (yoki shu oyda belgisi bor). */
+const roster = (gid, mk) => D.students.filter(s => s.group_id === gid && s.active && (!L.frozenInMonth(s, mk) || D.attendance.some(a => a.student_id === s.id && a.day.startsWith(mk))));
 const curMonth = () => L.monthOf(L.today());
 const ST = { month: null, pg: '', sq: '', sg: '', sf: '', rg: '' };   // sahifalar orasida eslab qolinadigan filtrlar
 const mkNow = () => ST.month || (ST.month = curMonth());
@@ -33,7 +35,7 @@ const pctBadge = p => p === null ? badge('—') : badge(p + '%', p >= 85 ? 'ok' 
 /** Qarzdorlar ro'yxati (faol o'quvchilar, tanlangan oy bo'yicha qolgan summa > 0). */
 function debtors(mk) {
   const gm = gmap(), now = new Date();
-  return D.students.filter(s => s.active).map(s => {
+  return D.students.filter(L.isLive).map(s => {
     const g = gm.get(s.group_id), bal = L.monthBalance(s, g, D.payments, mk);
     return { s, g, bal, total: L.totalDebt(s, g, D.payments, mk), due: g ? L.daysToDue(g, now) : 0 };
   }).filter(x => x.bal.left > 0).sort((a, b) => a.due - b.due || b.bal.left - a.bal.left);
@@ -46,7 +48,7 @@ const contactBtns = (s, text) => {
 };
 
 // ───────── navigatsiya ─────────
-const NAV = [['/', 'Bosh sahifa'], ['/groups', 'Guruhlar'], ['/students', "O'quvchilar"], ['/attendance', 'Davomat'], ['/payments', "To'lovlar"], ['/schedule', 'Jadval'], ['/reports', 'Hisobot']];
+const NAV = [['/', 'Bosh sahifa'], ['/groups', 'Guruhlar'], ['/students', "O'quvchilar"], ['/attendance', 'Davomat'], ['/payments', "To'lovlar"], ['/watch', 'Kuzatuv'], ['/schedule', 'Jadval'], ['/reports', 'Hisobot']];
 function renderNav(portal, path) {
   const theme = document.documentElement.dataset.theme;
   $('#nav').innerHTML = `<div class="wrap"><a class="brand" href="${portal ? '#/me' : '#/'}"><span class="logo">${icon('group', 18)}</span><span>${esc(CONFIG.title)}</span></a>
@@ -81,7 +83,7 @@ actions.login = async () => {
 async function dashboard() {
   await load();
   const mk = curMonth(), td = L.today(), wd = new Date().getDay(), gm = gmap();
-  const active = D.students.filter(s => s.active), debt = debtors(mk);
+  const active = D.students.filter(L.isLive), debt = debtors(mk);
   const income = D.payments.filter(p => String(p.paid_on).slice(0, 7) === mk).reduce((a, p) => a + Number(p.amount || 0), 0);
   const expected = active.reduce((a, s) => a + L.monthBalance(s, gm.get(s.group_id), D.payments, mk).due, 0);
   const debtSum = debt.reduce((a, x) => a + x.bal.left, 0);
@@ -89,7 +91,7 @@ async function dashboard() {
   const cancelledToday = new Set(D.lessons.filter(l => l.day === td && l.cancelled).map(l => l.group_id));
   root().innerHTML = `<div class="wrap page">${head(`Salom, ${esc(CONFIG.teacher.split(' ')[0])} 👋`, `<span class="muted">${L.WD[wd]}, ${fmtDate(td)}</span>`)}
     <div class="stats">
-      <div class="stat"><span>Faol o'quvchilar</span><b>${active.length}</b><small>${D.groups.filter(g => g.active).length} ta guruh</small></div>
+      <div class="stat"><span>Faol o'quvchilar</span><b>${active.length}</b><small>${D.groups.filter(g => g.active).length} ta guruh${D.students.filter(x => x.active && L.isFrozen(x)).length ? ` · ${D.students.filter(x => x.active && L.isFrozen(x)).length} muzlatilgan` : ''}</small></div>
       <div class="stat"><span>${monthLabel(mk)} tushum</span><b>${money(income)}</b><small>kutilgan: ${money(expected)}</small></div>
       <div class="stat ${debt.length ? 'warn' : ''}"><span>Qarzdorlar (shu oy)</span><b>${debt.length}</b><small>${money(debtSum)}</small></div>
     </div>
@@ -120,7 +122,7 @@ async function groupsView() {
   const rows = D.groups.slice().sort((a, b) => Number(b.active) - Number(a.active) || a.name.localeCompare(b.name));
   root().innerHTML = `<div class="wrap page">${head('Guruhlar', `<button class="btn primary" data-act="groupEdit">${icon('plus', 16)} Yangi guruh</button>`)}
     <div class="cards">${rows.map(g => {
-      const sts = D.students.filter(s => s.group_id === g.id && s.active), gdebt = sts.reduce((a, s) => a + L.monthBalance(s, g, D.payments, mk).left, 0);
+      const sts = D.students.filter(s => s.group_id === g.id && L.isLive(s)), gdebt = sts.reduce((a, s) => a + L.monthBalance(s, g, D.payments, mk).left, 0);
       return `<div class="card ${g.active ? '' : 'off'}"><div class="row between"><h3><a href="#/groups/${g.id}">${esc(g.name)}</a></h3>${g.active ? '' : badge('Arxiv')}</div>
         <div class="muted sm">${dayNames(g.days)} ${g.time ? '· ' + esc(g.time) : ''}</div>
         <div class="kv"><span>Oylik narx</span><b>${money(g.price)}</b></div><div class="kv"><span>O'quvchilar</span><b>${sts.length}</b></div>
@@ -158,14 +160,14 @@ async function groupView(id) {
   await load(); const g = D.groups.find(x => x.id === id);
   if (!g) { root().innerHTML = '<div class="wrap page"><div class="empty">Guruh topilmadi.<br><br><a class="btn" href="#/groups">Orqaga</a></div></div>'; return; }
   const mk = mkNow(), sts = D.students.filter(s => s.group_id === id).sort((a, b) => Number(b.active) - Number(a.active) || a.name.localeCompare(b.name));
-  const grid = L.attendanceGrid(g, sts.filter(s => s.active), D.attendance, D.lessons, mk);
+  const grid = L.attendanceGrid(g, roster(id, mk), D.attendance, D.lessons, mk);
   root().innerHTML = `<div class="wrap page"><a class="btn sm" href="#/groups">← Guruhlar</a>
     ${head(esc(g.name), `<button class="btn" data-act="groupEdit" data-id="${g.id}">${icon('edit', 15)} Tahrirlash</button><button class="btn primary" data-act="studentEdit" data-g="${g.id}">${icon('plus', 15)} O'quvchi qo'shish</button>`)}
     <p class="muted">${dayNames(g.days)} ${g.time ? '· ' + esc(g.time) : ''} · ${money(g.price)} / oy · to'lov muddati: har oyning ${g.pay_day}-kuni</p>
     <h2 class="h2 mt">O'quvchilar (${sts.length})</h2>
     <div class="tablewrap"><table><thead><tr><th>Ism</th><th>Telefon</th><th>${monthLabel(mk)}</th><th class="r">Qolgan</th><th></th></tr></thead><tbody>
-    ${sts.map(s => { const b = L.monthBalance(s, g, D.payments, mk); return `<tr class="${s.active ? '' : 'off'}"><td><a href="#/students/${s.id}"><b>${esc(s.name)}</b></a> ${s.active ? '' : badge('Faol emas')}</td><td class="muted">${esc(phoneOf(s))}</td><td>${payBadge(b.status)}</td><td class="r">${b.left ? money(b.left) : '—'}</td><td class="r"><button class="btn sm" data-act="payAdd" data-id="${s.id}" data-m="${mk}">${icon('money', 14)}</button></td></tr>`; }).join('') || '<tr><td colspan="5" class="muted">Bu guruhda hali o\'quvchi yo\'q.</td></tr>'}</tbody></table></div>
-    <div class="row between wrapx mt"><h2 class="h2">Davomat jadvali</h2>${monthPicker(mk)}</div>
+    ${sts.map(s => { const b = L.monthBalance(s, g, D.payments, mk); return `<tr class="${s.active ? '' : 'off'}"><td><a href="#/students/${s.id}"><b>${esc(s.name)}</b></a> ${s.active ? (L.isFrozen(s) ? badge('Muzlatilgan', 'draft') : '') : badge('Faol emas')}</td><td class="muted">${esc(phoneOf(s))}</td><td>${payBadge(b.status)}</td><td class="r">${b.left ? money(b.left) : '—'}</td><td class="r"><button class="btn sm" data-act="payAdd" data-id="${s.id}" data-m="${mk}">${icon('money', 14)}</button></td></tr>`; }).join('') || '<tr><td colspan="5" class="muted">Bu guruhda hali o\'quvchi yo\'q.</td></tr>'}</tbody></table></div>
+    <div class="row between wrapx mt"><h2 class="h2">Davomat jadvali</h2><div class="row wrapx">${monthPicker(mk)}<button class="btn sm" data-act="pdfGroup" data-id="${g.id}">${icon('download', 14)} PDF</button></div></div>
     ${gridHtml(grid)}</div>`;
 }
 const monthPicker = mk => `<div class="row" style="gap:6px"><button class="icon-btn" data-act="monthGo" data-n="-1">${icon('left', 16)}</button><b style="min-width:130px;text-align:center">${monthLabel(mk)}</b><button class="icon-btn" data-act="monthGo" data-n="1">${icon('right', 16)}</button></div>`;
@@ -185,18 +187,19 @@ function studentTable() {
   const q = ST.sq.trim().toLowerCase();
   if (ST.sg) rows = rows.filter(x => x.s.group_id === ST.sg);
   if (q) rows = rows.filter(x => (x.s.name + ' ' + x.s.phone + ' ' + x.s.parent_phone + ' ' + x.s.code).toLowerCase().includes(q));
-  if (ST.sf === 'debt') rows = rows.filter(x => x.s.active && x.bal.left > 0);
+  if (ST.sf === 'debt') rows = rows.filter(x => L.isLive(x.s) && x.bal.left > 0);
+  else if (ST.sf === 'frozen') rows = rows.filter(x => x.s.active && L.isFrozen(x.s));
   else if (ST.sf === 'off') rows = rows.filter(x => !x.s.active); else rows = rows.filter(x => x.s.active || ST.sf === 'all');
   rows.sort((a, b) => a.s.name.localeCompare(b.s.name));
   return { count: rows.length, html: `<table><thead><tr><th>Ism</th><th>Guruh</th><th>Telefon</th><th>${monthLabel(mk)}</th><th class="r">Jami qarz</th><th>Kod</th></tr></thead><tbody>
-    ${rows.map(x => `<tr class="${x.s.active ? '' : 'off'}"><td><a href="#/students/${x.s.id}"><b>${esc(x.s.name)}</b></a></td><td class="muted">${esc(x.g?.name || '—')}</td><td class="muted">${esc(phoneOf(x.s))}</td><td>${payBadge(x.bal.status)}</td><td class="r ${x.total ? 'bad-t' : ''}">${x.total ? money(x.total) : '—'}</td><td><code>${esc(x.s.code)}</code></td></tr>`).join('') || '<tr><td colspan="6" class="muted">Hech narsa topilmadi.</td></tr>'}</tbody></table>` };
+    ${rows.map(x => `<tr class="${x.s.active ? '' : 'off'}"><td><a href="#/students/${x.s.id}"><b>${esc(x.s.name)}</b></a> ${L.isFrozen(x.s) ? badge('Muzlatilgan', 'draft') : ''}</td><td class="muted">${esc(x.g?.name || '—')}</td><td class="muted">${esc(phoneOf(x.s))}</td><td>${L.isFrozen(x.s) ? '—' : payBadge(x.bal.status)}</td><td class="r ${x.total ? 'bad-t' : ''}">${x.total ? money(x.total) : '—'}</td><td><code>${esc(x.s.code)}</code></td></tr>`).join('') || '<tr><td colspan="6" class="muted">Hech narsa topilmadi.</td></tr>'}</tbody></table>` };
 }
 async function studentsView() {
   await load(); const mk = curMonth(), t = studentTable();
-  root().innerHTML = `<div class="wrap page">${head("O'quvchilar", `<button class="btn primary" data-act="studentEdit">${icon('plus', 16)} Yangi o'quvchi</button>`)}
+  root().innerHTML = `<div class="wrap page">${head("O'quvchilar", `<button class="btn" data-act="bulkAdd">${icon('users', 16)} Ko'plab qo'shish / Excel</button><button class="btn primary" data-act="studentEdit">${icon('plus', 16)} Yangi o'quvchi</button>`)}
     <div class="filters"><input class="inp" id="sSearch" data-in="sFilter" placeholder="Ism, telefon yoki kod…" value="${esc(ST.sq)}">
       <select class="sel" id="sGroup" data-in="sFilter"><option value="">Hamma guruh</option>${D.groups.map(g => `<option value="${g.id}" ${ST.sg === g.id ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}</select>
-      <select class="sel" id="sFlt" data-in="sFilter"><option value="">Faol</option><option value="debt" ${ST.sf === 'debt' ? 'selected' : ''}>Qarzdor (${monthLabel(mk)})</option><option value="off" ${ST.sf === 'off' ? 'selected' : ''}>Faol emas</option><option value="all" ${ST.sf === 'all' ? 'selected' : ''}>Hammasi</option></select>
+      <select class="sel" id="sFlt" data-in="sFilter"><option value="">Faol</option><option value="debt" ${ST.sf === 'debt' ? 'selected' : ''}>Qarzdor (${monthLabel(mk)})</option><option value="frozen" ${ST.sf === 'frozen' ? 'selected' : ''}>Muzlatilgan</option><option value="off" ${ST.sf === 'off' ? 'selected' : ''}>Faol emas (ketgan)</option><option value="all" ${ST.sf === 'all' ? 'selected' : ''}>Hammasi</option></select>
       <span class="muted" id="sCount">${t.count} ta</span></div>
     <div class="tablewrap" id="sTable">${t.html}</div></div>`;
 }
@@ -234,7 +237,7 @@ async function studentView(id) {
   const months = L.monthsBetween(L.monthOf(s.joined), now).reverse().slice(0, 12);
   const link = `${location.origin}${location.pathname}#/me/${s.code}`, total = L.totalDebt(s, g, D.payments, now);
   root().innerHTML = `<div class="wrap page"><a class="btn sm" href="#/students">← O'quvchilar</a>
-    ${head(`${esc(s.name)} ${s.active ? '' : badge('Faol emas')}`, `<button class="btn" data-act="studentEdit" data-id="${s.id}">${icon('edit', 15)} Tahrirlash</button><button class="btn primary" data-act="payAdd" data-id="${s.id}" data-m="${now}">${icon('money', 15)} To'lov qo'shish</button>`)}
+    ${head(`${esc(s.name)} ${s.active ? (L.isFrozen(s) ? badge('Muzlatilgan', 'draft') : '') : badge('Faol emas')}`, `<button class="btn" data-act="studentEdit" data-id="${s.id}">${icon('edit', 15)} Tahrirlash</button>${s.active ? (L.isFrozen(s) ? `<button class="btn" data-act="studentUnfreeze" data-id="${s.id}">Muzlatishni bekor qilish</button>` : `<button class="btn" data-act="studentFreeze" data-id="${s.id}">Muzlatish</button>`) : ''}<button class="btn primary" data-act="payAdd" data-id="${s.id}" data-m="${now}">${icon('money', 15)} To'lov qo'shish</button>`)}
     <div class="stats"><div class="stat"><span>Guruh</span><b style="font-size:20px">${g ? `<a href="#/groups/${g.id}">${esc(g.name)}</a>` : '—'}</b><small>${money(L.priceOf(s, g))} / oy</small></div>
       <div class="stat ${total ? 'warn' : ''}"><span>Jami qarz</span><b>${money(total)}</b><small>${monthLabel(now)}: ${money(L.monthBalance(s, g, D.payments, now).left)}</small></div>
       <div class="stat"><span>Davomat (oxirgi 30 dars)</span><b>${st.pct === null ? '—' : st.pct + '%'}</b><small>${st.p + st.l} keldi · ${st.a} kelmadi · ${st.e} sababli</small></div></div>
@@ -244,7 +247,7 @@ async function studentView(id) {
     <div class="tablewrap"><table><thead><tr><th>Oy</th><th class="r">Kerak</th><th class="r">To'langan</th><th class="r">Qolgan</th><th></th></tr></thead><tbody>
     ${months.map(m => { const b = L.monthBalance(s, g, D.payments, m); return `<tr><td>${monthLabel(m)}</td><td class="r">${money(b.due)}</td><td class="r">${money(b.paid)}</td><td class="r ${b.left ? 'bad-t' : ''}">${b.left ? money(b.left) : '—'}</td><td class="r">${payBadge(b.status)} ${b.left ? `<button class="btn sm" data-act="payAdd" data-id="${s.id}" data-m="${m}">+</button>` : ''}</td></tr>`; }).join('')}</tbody></table></div>
     <h2 class="h2 mt">To'lovlar tarixi</h2>${payTable(pays, false)}
-    <h2 class="h2 mt">Davomat (oxirgi 30 ta belgi)</h2>
+    <div class="row between wrapx mt"><h2 class="h2">Davomat (oxirgi 30 ta belgi)</h2><div class="row wrapx">${monthPicker(mkNow())}<button class="btn sm" data-act="pdfStudent" data-id="${s.id}">${icon('download', 14)} PDF (${monthLabel(mkNow())})</button></div></div>
     <div class="chips">${att.slice(0, 30).map(a => `<span class="dot st-${a.status}" title="${fmtDate(a.day)} · ${L.STATUS[a.status]}">${fmtDate(a.day).slice(0, 5)} ${MARK[a.status]}</span>`).join('') || '<span class="muted">Hali belgilanmagan.</span>'}</div>
     <div style="margin-top:28px"><button class="btn danger" data-act="studentDel" data-id="${s.id}">${icon('trash', 14)} O'quvchini o'chirish</button></div></div>`;
 }
@@ -286,7 +289,7 @@ function attState() {
 }
 const attHash = (g, d) => `#/attendance?g=${g}&d=${d}`;
 function attBody(g, d) {
-  const sts = D.students.filter(s => s.group_id === g.id && s.active && L.monthOf(s.joined) <= L.monthOf(d)).sort((a, b) => a.name.localeCompare(b.name));
+  const sts = D.students.filter(s => s.group_id === g.id && s.active && !L.frozenOn(s, d) && L.monthOf(s.joined) <= L.monthOf(d)).sort((a, b) => a.name.localeCompare(b.name));
   const les = D.lessons.find(l => l.group_id === g.id && l.day === d) || {}, map = new Map(D.attendance.filter(a => a.day === d).map(a => [a.student_id, a.status]));
   const cnt = L.attStats(sts.map(s => ({ status: map.get(s.id) })).filter(x => x.status));
   const offDay = !(g.days || []).includes(L.parseYmd(d).getDay());
@@ -321,7 +324,7 @@ actions.attSet = async el => {
 };
 actions.attAll = async () => {
   const { g, d } = attState(), have = new Set(D.attendance.filter(a => a.day === d).map(a => a.student_id));
-  const recs = D.students.filter(s => s.group_id === g.id && s.active && L.monthOf(s.joined) <= L.monthOf(d) && !have.has(s.id)).map(s => ({ student_id: s.id, day: d, status: 'p' }));
+  const recs = D.students.filter(s => s.group_id === g.id && s.active && !L.frozenOn(s, d) && L.monthOf(s.joined) <= L.monthOf(d) && !have.has(s.id)).map(s => ({ student_id: s.id, day: d, status: 'p' }));
   await store.saveAttendance(recs); recs.forEach(r => D.attendance.push(r)); refreshAtt(); toast(`${recs.length} ta o'quvchi «keldi» deb belgilandi`, 'ok');
 };
 async function saveLesson(patch) {
@@ -355,23 +358,23 @@ async function scheduleView() {
   await load(); const wd = new Date().getDay();
   root().innerHTML = `<div class="wrap page">${head('Haftalik jadval', `<span class="muted">Bugun: ${L.WD[wd]}</span>`)}
     <div class="week">${L.WD_ORDER.map(d => { const gs = D.groups.filter(g => g.active && (g.days || []).includes(d)).sort((a, b) => String(a.time).localeCompare(String(b.time)));
-      return `<div class="wcol ${d === wd ? 'today' : ''}"><div class="wh">${L.WD[d]}</div>${gs.map(g => { const n = D.students.filter(s => s.group_id === g.id && s.active).length; return `<a class="wcard" href="#/groups/${g.id}"><b>${esc(g.time || '—')}</b><span>${esc(g.name)}</span><small>${n} o'quvchi</small></a>`; }).join('') || '<div class="muted sm">Dars yo\'q</div>'}</div>`; }).join('')}</div></div>`;
+      return `<div class="wcol ${d === wd ? 'today' : ''}"><div class="wh">${L.WD[d]}</div>${gs.map(g => { const n = D.students.filter(s => s.group_id === g.id && L.isLive(s)).length; return `<a class="wcard" href="#/groups/${g.id}"><b>${esc(g.time || '—')}</b><span>${esc(g.name)}</span><small>${n} o'quvchi</small></a>`; }).join('') || '<div class="muted sm">Dars yo\'q</div>'}</div>`; }).join('')}</div></div>`;
 }
 
 // ───────── hisobot ─────────
 async function reportsView() {
   await load(); const mk = mkNow(), gm = gmap(); const rg = D.groups.find(g => g.id === ST.rg) || D.groups.find(g => g.active) || D.groups[0];
   const stats = D.groups.map(g => {
-    const sts = D.students.filter(s => s.group_id === g.id && s.active), bals = sts.map(s => L.monthBalance(s, g, D.payments, mk));
-    const grid = L.attendanceGrid(g, sts, D.attendance, D.lessons, mk), all = grid.rows.flatMap(r => grid.days.map((_, i) => ({ status: r.cells[i] }))).filter(x => x.status);
+    const sts = D.students.filter(s => s.group_id === g.id && L.isLive(s)), bals = sts.map(s => L.monthBalance(s, g, D.payments, mk));
+    const grid = L.attendanceGrid(g, roster(g.id, mk), D.attendance, D.lessons, mk), all = grid.rows.flatMap(r => grid.days.map((_, i) => ({ status: r.cells[i] }))).filter(x => x.status);
     return { g, n: sts.length, due: bals.reduce((a, b) => a + b.due, 0), paid: bals.reduce((a, b) => a + b.paid, 0), left: bals.reduce((a, b) => a + b.left, 0), pct: L.attStats(all).pct, lessons: grid.days.length };
   });
-  const grid = rg ? L.attendanceGrid(rg, D.students.filter(s => s.group_id === rg.id && s.active), D.attendance, D.lessons, mk) : null;
+  const grid = rg ? L.attendanceGrid(rg, roster(rg.id, mk), D.attendance, D.lessons, mk) : null;
   root().innerHTML = `<div class="wrap page">${head('Hisobot', monthPicker(mk))}
     <h2 class="h2">Guruhlar bo'yicha (${monthLabel(mk)})</h2>
     <div class="tablewrap"><table><thead><tr><th>Guruh</th><th class="r">O'quvchi</th><th class="r">Dars</th><th class="r">Davomat</th><th class="r">Kerak</th><th class="r">To'langan</th><th class="r">Qolgan</th></tr></thead><tbody>
     ${stats.map(x => `<tr><td><a href="#/groups/${x.g.id}"><b>${esc(x.g.name)}</b></a></td><td class="r">${x.n}</td><td class="r">${x.lessons}</td><td class="r">${pctBadge(x.pct)}</td><td class="r">${money(x.due)}</td><td class="r">${money(x.paid)}</td><td class="r ${x.left ? 'bad-t' : ''}">${money(x.left)}</td></tr>`).join('') || '<tr><td colspan="7" class="muted">Ma\'lumot yo\'q</td></tr>'}</tbody></table></div>
-    <div class="row wrapx mt"><button class="btn" data-act="csvPay">${icon('download', 15)} To'lovlar (CSV)</button><button class="btn" data-act="csvAtt">${icon('download', 15)} Davomat (CSV)</button></div>
+    <div class="row wrapx mt"><button class="btn" data-act="csvPay">${icon('download', 15)} To'lovlar (CSV)</button><button class="btn" data-act="csvAtt">${icon('download', 15)} Davomat (CSV)</button><button class="btn primary" data-act="pdfGroup">${icon('download', 15)} Davomat PDF (${rg ? esc(rg.name) : ''})</button></div>
     <div class="row between wrapx mt"><h2 class="h2">Davomat jadvali</h2><select class="sel" id="rgSel" data-in="rgFilter" style="width:auto">${D.groups.map(g => `<option value="${g.id}" ${rg && g.id === rg.id ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}</select></div>
     ${grid ? gridHtml(grid) : ''}</div>`;
 }
@@ -384,7 +387,7 @@ actions.csvPay = async () => {
 };
 actions.csvAtt = async () => {
   await load(); const mk = mkNow(), rg = D.groups.find(g => g.id === ST.rg) || D.groups.find(g => g.active) || D.groups[0]; if (!rg) return;
-  const grid = L.attendanceGrid(rg, D.students.filter(s => s.group_id === rg.id && s.active), D.attendance, D.lessons, mk);
+  const grid = L.attendanceGrid(rg, roster(rg.id, mk), D.attendance, D.lessons, mk);
   const lines = [[`Ism`, ...grid.days.map(fmtDate), 'Davomat %'].join(';')];
   grid.rows.forEach(r => lines.push([r.student.name, ...r.cells.map(c => L.STATUS[c] || ''), r.stats.pct ?? ''].map(L.csvCell).join(';')));
   download(`davomat-${rg.name}-${mk}.csv`, lines.join('\n'));
@@ -407,7 +410,7 @@ async function portalView(codeParam) {
   const att = (r.attendance || []).slice().sort((a, b) => b.day.localeCompare(a.day)), st = L.attStats(att.slice(0, 30));
   const bal = L.monthBalance(s, g, pays, now), debt = L.totalDebt(s, g, pays, now), months = L.monthsBetween(L.monthOf(s.joined), now).reverse().slice(0, 12);
   const cancelled = new Set((r.lessons || []).filter(l => l.cancelled).map(l => l.day));
-  root().innerHTML = `<div class="wrap page"><div class="row between wrapx ph"><div><h1 class="ptitle">${esc(s.name)}</h1><p class="muted">${g ? esc(g.name) + ' · ' + dayNames(g.days) + (g.time ? ' · ' + esc(g.time) : '') : 'Guruhsiz'}</p></div><button class="btn sm" data-act="portalOut">Chiqish</button></div>
+  root().innerHTML = `<div class="wrap page"><div class="row between wrapx ph"><div><h1 class="ptitle">${esc(s.name)} ${L.isFrozen(s) ? badge('Muzlatilgan', 'draft') : ''}</h1><p class="muted">${g ? esc(g.name) + ' · ' + dayNames(g.days) + (g.time ? ' · ' + esc(g.time) : '') : 'Guruhsiz'}</p></div><button class="btn sm" data-act="portalOut">Chiqish</button></div>
     <div class="stats"><div class="stat ${bal.left ? 'warn' : ''}"><span>${monthLabel(now)} to'lov</span><b>${bal.status === 'paid' ? "To'langan ✓" : money(bal.left)}</b><small>${bal.status === 'paid' ? '' : `to'lash kerak${g ? ` · muddat: har oyning ${g.pay_day}-kuni` : ''}`}</small></div>
       <div class="stat ${debt ? 'warn' : ''}"><span>Jami qarz</span><b>${money(debt)}</b></div>
       <div class="stat"><span>Davomat (oxirgi 30 dars)</span><b>${st.pct === null ? '—' : st.pct + '%'}</b><small>${st.p + st.l} keldi · ${st.a} kelmadi · ${st.e} sababli</small></div></div>
@@ -422,9 +425,176 @@ async function portalView(codeParam) {
 actions.portalGo = () => { const c = $('#mcCode').value.trim().toUpperCase(); if (!c) { $('#mcErr').textContent = 'Kodni kiriting'; return; } go('#/me/' + c); render(); };
 actions.portalOut = () => { try { localStorage.removeItem('mg_code'); } catch { /* ixtiyoriy */ } go('#/me'); render(); };
 
+// ───────── muzlatish ─────────
+actions.studentFreeze = async el => {
+  await load(); const s = D.students.find(x => x.id === el.dataset.id);
+  modal(`<h2>Muzlatish</h2><p class="muted">${esc(s.name)}: muzlatilgan davrda to'lov hisoblanmaydi va davomat ro'yxatiga chiqmaydi.</p>
+    <label class="lbl">Qaysi sanadan</label><input class="inp" id="fzDate" type="date" value="${L.today()}">
+    <label class="lbl">Sabab (ixtiyoriy)</label><input class="inp" id="fzWhy" placeholder="Masalan: kasal, safarda">
+    <div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn" data-act="closeModal">Bekor qilish</button><button class="btn primary" data-act="freezeSave" data-id="${s.id}">Muzlatish</button></div>`);
+};
+actions.freezeSave = async el => {
+  const s = D.students.find(x => x.id === el.dataset.id), from = $('#fzDate').value || L.today();
+  await store.save('students', { ...s, freezes: [...L.freezesOf(s), { from, to: null, why: $('#fzWhy').value.trim() }] });
+  closeModal(); invalidate(); toast('Muzlatildi', 'ok'); render();
+};
+actions.studentUnfreeze = async el => {
+  await load(); const s = D.students.find(x => x.id === el.dataset.id);
+  modal(`<h2>Muzlatishni bekor qilish</h2><p class="muted">${esc(s.name)} yana darsga qaytadi. To'lov shu sana oyidan boshlab hisoblanadi.</p>
+    <label class="lbl">Qaytgan sana</label><input class="inp" id="fzDate" type="date" value="${L.today()}">
+    <div class="row" style="justify-content:flex-end;margin-top:16px"><button class="btn" data-act="closeModal">Bekor qilish</button><button class="btn primary" data-act="unfreezeSave" data-id="${s.id}">Qaytarish</button></div>`);
+};
+actions.unfreezeSave = async el => {
+  const s = D.students.find(x => x.id === el.dataset.id), fr = L.freezesOf(s).map(f => ({ ...f })), last = fr[fr.length - 1], to = $('#fzDate').value || L.today();
+  if (!last || last.to) { closeModal(); return; }
+  if (to < last.from) { toast("Qaytgan sana muzlatilgan sanadan oldin bo'lmasin", 'bad'); return; }
+  last.to = to; await store.save('students', { ...s, freezes: fr });
+  closeModal(); invalidate(); toast('Qaytarildi', 'ok'); render();
+};
+
+// ───────── ko'plab qo'shish: matn ro'yxat va Excel ─────────
+let IMP = [];
+const loadSheetJS = () => window.XLSX ? Promise.resolve(window.XLSX) : new Promise((res, rej) => {
+  const sc = document.createElement('script'); sc.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+  sc.onload = () => res(window.XLSX); sc.onerror = () => rej(new Error("Excel o'qish kutubxonasi yuklanmadi. Internetni tekshiring.")); document.head.appendChild(sc);
+});
+const cleanName = f => f.replace(/\.xlsx?$/i, '').replace(/[_]+/g, ' ').replace(/\(\d+\)/g, '').replace(/\bStudents?\b/i, '').replace(/\s+/g, ' ').trim();
+actions.bulkAdd = async () => {
+  await load(); IMP = [];
+  modal(`<h2>Ko'plab o'quvchi qo'shish</h2>
+    <div class="panel" style="padding:16px"><b>1) Excel fayldan</b> <small class="muted">(bir nechta fayl tanlash mumkin; fayl faqat brauzeringizda o'qiladi)</small>
+      <input class="inp" type="file" id="impFile" accept=".xlsx,.xls" multiple data-in="impFiles" style="margin-top:8px">
+      <div id="impList"></div></div>
+    <div class="panel" style="padding:16px;margin-top:12px"><b>2) Matn ro'yxatidan</b> <small class="muted">har qatorda: Ism Familiya; telefon (telefon ixtiyoriy)</small>
+      <select class="sel" id="txtGroup" style="margin-top:8px"><option value="">— guruhni tanlang —</option>${D.groups.map(g => `<option value="${g.id}" ${ST.sg === g.id ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}</select>
+      <textarea class="inp" id="txtList" rows="6" style="margin-top:8px" placeholder="Aliyev Vali; 90 123 45 67\nKarimova Madina"></textarea>
+      <button class="btn primary" data-act="txtImport" style="margin-top:8px">Qo'shish</button></div>
+    <div class="err" id="mErr"></div><div class="row" style="justify-content:flex-end;margin-top:10px"><button class="btn" data-act="closeModal">Yopish</button></div>`, true);
+};
+inputs.impFiles = async el => {
+  const err = $('#mErr'); err.textContent = ''; IMP = [];
+  try {
+    const X = await loadSheetJS();
+    for (const f of [...el.files]) {
+      const wb = X.read(await f.arrayBuffer(), { type: 'array' });
+      for (const sn of wb.SheetNames) {
+        const rows = X.utils.sheet_to_json(wb.Sheets[sn], { header: 1, defval: null, raw: true }), r = L.parseRegister(rows);
+        if (r.error || !r.students.length) continue;
+        const name = /^sheet\d*$/i.test(sn) ? cleanName(f.name) : sn.trim();
+        IMP.push({ name, price: '', students: r.students, skipped: r.skipped, include: true, file: f.name });
+      }
+    }
+  } catch (e) { err.textContent = e.message; }
+  drawImp();
+};
+function drawImp() {
+  const box = $('#impList'); if (!box) return;
+  if (!IMP.length) { box.innerHTML = '<p class="muted sm" style="margin-top:8px">Fayl tanlang. Har bir varaq alohida guruh bo\'ladi.</p>'; return; }
+  const have = new Map(D.groups.map(g => [g.name.toLowerCase(), g]));
+  box.innerHTML = `<div class="tablewrap" style="margin-top:10px"><table><thead><tr><th></th><th>Guruh nomi</th><th>Oylik narx</th><th class="r">O'quvchi</th><th class="r">Muzlatilgan</th></tr></thead><tbody>
+    ${IMP.map((g, i) => `<tr><td><input type="checkbox" data-in="impRow" data-i="${i}" data-f="include" ${g.include ? 'checked' : ''}></td>
+      <td><input class="inp" data-in="impRow" data-i="${i}" data-f="name" value="${esc(g.name)}" style="min-width:170px">${have.has(g.name.toLowerCase()) ? '<small class="muted"> mavjud guruhga qo\'shiladi</small>' : ''}</td>
+      <td><input class="inp" data-in="impRow" data-i="${i}" data-f="price" inputmode="numeric" value="${esc(g.price)}" placeholder="so'm" style="width:120px"></td>
+      <td class="r">${g.students.length}</td><td class="r">${g.students.filter(x => x.frozen).length}</td></tr>`).join('')}</tbody></table></div>
+    <label class="lbl">Qarz hisobi qachondan boshlansin</label>
+    <select class="sel" id="impStart"><option value="this">Shu oydan (shu oy to'lovini ham kiritaman)</option><option value="next">Keyingi oydan (shu oy hisobga olinmaydi)</option></select>
+    <p class="muted sm" style="margin-top:8px">Eski to'lov holati («Paid to July» va h.k.) har bir o'quvchi izohiga yoziladi. Telefon ota-ona telefoniga qo'yiladi. «On Leave» toifasidagilar muzlatiladi.</p>
+    <button class="btn primary" data-act="impGo" style="margin-top:8px">${icon('check', 15)} Import qilish (${IMP.filter(g => g.include).reduce((a, g) => a + g.students.length, 0)} o'quvchi)</button>`;
+}
+inputs.impRow = el => { const g = IMP[Number(el.dataset.i)]; if (!g) return; const f = el.dataset.f; g[f] = f === 'include' ? el.checked : el.value; if (f === 'include') drawImp(); };
+const monthStart = () => { const mk = curMonth(); return `${$('#impStart')?.value === 'next' ? L.addMonths(mk, 1) : mk}-01`; };
+async function makeStudents(group, list) {
+  const exist = new Set(D.students.filter(s => s.group_id === group.id).map(s => s.name.toLowerCase())), taken = new Set(D.students.map(s => s.code)), td = L.today(), recs = [];
+  for (const x of list) {
+    if (exist.has(x.name.toLowerCase())) continue; exist.add(x.name.toLowerCase());
+    const code = L.genCode(taken); taken.add(code);
+    recs.push({ group_id: group.id, name: x.name, phone: '', parent_phone: x.parent_phone || '', code, price: null, joined: monthStart(), active: true, note: x.note || '', freezes: x.frozen ? [{ from: td, to: null, why: 'Excel: On Leave' }] : [] });
+  }
+  if (recs.length) await store.saveMany('students', recs);
+  return { added: recs.length, skipped: list.length - recs.length };
+}
+actions.impGo = async el => {
+  const todo = IMP.filter(g => g.include && g.name.trim()); if (!todo.length) { $('#mErr').textContent = 'Hech narsa tanlanmagan'; return; }
+  el.disabled = true; el.textContent = 'Import qilinmoqda…';
+  let added = 0, skipped = 0, groups = 0;
+  try {
+    for (const g of todo) {
+      let grp = D.groups.find(x => x.name.toLowerCase() === g.name.trim().toLowerCase());
+      if (!grp) { grp = await store.save('groups', { name: g.name.trim(), price: Math.max(0, Number(String(g.price).replace(/\s/g, '')) || 0), days: [], time: '', pay_day: 5, note: '', active: true }); D.groups.push(grp); groups++; }
+      const r = await makeStudents(grp, g.students); added += r.added; skipped += r.skipped; await load(true);
+    }
+    closeModal(); invalidate(); toast(`${added} ta o'quvchi qo'shildi${groups ? `, ${groups} ta yangi guruh` : ''}${skipped ? `, ${skipped} ta takror o'tkazildi` : ''}`, 'ok'); go('#/students'); render();
+  } catch (e) { $('#mErr').textContent = e.message; el.disabled = false; el.textContent = 'Qayta urinish'; invalidate(); }
+};
+actions.txtImport = async () => {
+  const gid = $('#txtGroup').value, lines = $('#txtList').value.split('\n').map(l => l.trim()).filter(Boolean);
+  if (!gid) { $('#mErr').textContent = 'Guruhni tanlang'; return; } if (!lines.length) { $('#mErr').textContent = "Ro'yxat bo'sh"; return; }
+  const list = lines.map(l => { const [n, p] = l.split(/[;\t]/); return { name: (n || '').replace(/\s+/g, ' ').trim(), parent_phone: L.formatPhone(p || '') }; }).filter(x => x.name);
+  const r = await makeStudents(D.groups.find(g => g.id === gid), list);
+  closeModal(); invalidate(); toast(`${r.added} ta o'quvchi qo'shildi${r.skipped ? `, ${r.skipped} ta takror o'tkazildi` : ''}`, 'ok'); render();
+};
+
+// ───────── kuzatuv ─────────
+async function watchView() {
+  await load(); const mk = curMonth(), gm = gmap(), now = new Date(), td = L.today();
+  const since = L.ymd(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 14));
+  const flagged = D.students.filter(L.isLive).map(s => { const g = gm.get(s.group_id); return { s, g, bal: L.monthBalance(s, g, D.payments, mk), reasons: L.studentWatch(s, g, D.attendance, D.payments, now) }; })
+    .filter(x => x.reasons.length).sort((a, b) => b.reasons.length - a.reasons.length || (b.reasons.find(r => r.k === 'streak')?.n || 0) - (a.reasons.find(r => r.k === 'streak')?.n || 0));
+  const frozen = D.students.filter(s => s.active && L.isFrozen(s)), fresh = D.students.filter(s => s.active && String(s.created_at || '').slice(0, 10) >= since);
+  const why = r => r.k === 'streak' ? badge(`${r.n} marta ketma-ket kelmadi`, 'bad') : r.k === 'low' ? badge(`Davomat ${r.pct}%`, 'draft') : badge(`Qarz ${money(r.left)}${r.overdue ? ' (kechikkan)' : ''}`, r.overdue ? 'bad' : 'draft');
+  const gstat = D.groups.filter(g => g.active).map(g => {
+    const live = D.students.filter(s => s.group_id === g.id && L.isLive(s)), from = L.ymd(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 30));
+    return { g, n: live.length, st: L.attStats(D.attendance.filter(a => a.day >= from && live.some(s => s.id === a.student_id))) };
+  });
+  root().innerHTML = `<div class="wrap page">${head('Kuzatuv', `<span class="muted">Oxirgi 30 kun bo'yicha</span>`)}
+    <div class="stats"><div class="stat ${flagged.length ? 'warn' : ''}"><span>E'tibor kerak</span><b>${flagged.length}</b><small>o'quvchi</small></div>
+      <div class="stat"><span>Muzlatilgan</span><b>${frozen.length}</b><small>o'quvchi</small></div><div class="stat"><span>Yangi (14 kun)</span><b>${fresh.length}</b><small>o'quvchi</small></div></div>
+    <section class="panel"><h2 class="h2">${icon('bell', 18)} E'tibor kerak bo'lgan o'quvchilar</h2>
+    ${flagged.length ? flagged.map(x => `<div class="lrow"><div><a href="#/students/${x.s.id}"><b>${esc(x.s.name)}</b></a> <span class="muted sm">${esc(x.g?.name || '—')}</span><div class="chips" style="margin-top:6px">${x.reasons.map(why).join('')}</div></div>
+      <div class="row" style="gap:6px">${x.bal.left ? contactBtns(x.s, remindOf(x, mk)) : (digits(phoneOf(x.s)) ? `<a class="btn sm" href="tel:${esc(digits(phoneOf(x.s)))}">${icon('phone', 14)} Qo'ng'iroq</a>` : '')}</div></div>`).join('') : "<p class=\"muted\">Hozircha hamma yaxshi: ketma-ket dars qoldirgan, davomati past yoki qarzdor o'quvchi yo'q 🎉</p>"}</section>
+    <div class="grid2 mt2"><section class="panel"><h2 class="h2">Muzlatilgan o'quvchilar</h2>
+      ${frozen.length ? frozen.map(s => { const f = L.freezesOf(s).slice(-1)[0]; return `<div class="lrow"><div><a href="#/students/${s.id}"><b>${esc(s.name)}</b></a><div class="muted sm">${esc(gm.get(s.group_id)?.name || '—')} · ${fmtDate(f.from)} dan${f.why ? ' · ' + esc(f.why) : ''}</div></div><button class="btn sm" data-act="studentUnfreeze" data-id="${s.id}">Qaytarish</button></div>`; }).join('') : '<p class="muted">Muzlatilgan o\'quvchi yo\'q.</p>'}</section>
+    <section class="panel"><h2 class="h2">Guruhlar davomati (30 kun)</h2>
+      ${gstat.map(x => `<div class="lrow"><div><a href="#/groups/${x.g.id}"><b>${esc(x.g.name)}</b></a><div class="muted sm">${x.n} o'quvchi · ${x.st.total} belgi</div></div>${pctBadge(x.st.pct)}</div>`).join('') || '<p class="muted">Guruh yo\'q.</p>'}</section></div>
+    ${fresh.length ? `<section class="panel mt2"><h2 class="h2">Yangi qo'shilganlar</h2>${fresh.slice(0, 15).map(s => `<div class="lrow"><a href="#/students/${s.id}"><b>${esc(s.name)}</b></a><span class="muted sm">${esc(gm.get(s.group_id)?.name || '—')}</span></div>`).join('')}${fresh.length > 15 ? `<p class="muted sm" style="margin-top:8px">…va yana ${fresh.length - 15} ta</p>` : ''}</section>` : ''}</div>`;
+}
+
+// ───────── PDF (brauzerning «Save as PDF» i orqali) ─────────
+function printDoc(html, landscape = false) {
+  let host = $('#printArea'); if (!host) { host = document.createElement('div'); host.id = 'printArea'; document.body.appendChild(host); }
+  host.innerHTML = `${html}<div class="pd-foot"><b>${esc(CONFIG.teacher)}</b> · Telegram: ${esc(CONFIG.telegram)} · ☎ ${esc(CONFIG.phone)}<br><span>Chop etilgan: ${fmtDate(L.today())}</span></div>`;
+  let st = $('#pageStyle'); if (!st) { st = document.createElement('style'); st.id = 'pageStyle'; document.head.appendChild(st); }
+  st.textContent = `@page{size:A4 ${landscape ? 'landscape' : 'portrait'};margin:10mm}`;
+  document.body.classList.add('printing');
+  const done = () => { document.body.classList.remove('printing'); host.innerHTML = ''; window.removeEventListener('afterprint', done); };
+  window.addEventListener('afterprint', done);
+  setTimeout(() => window.print(), 60);
+}
+const PMARK = { p: '✓', a: '✗', e: 'S', l: 'K' };
+function pdfGroup(g, mk) {
+  const grid = L.attendanceGrid(g, roster(g.id, mk), D.attendance, D.lessons, mk), cancelled = D.lessons.filter(l => l.group_id === g.id && l.cancelled && l.day.startsWith(mk)).map(l => fmtDate(l.day).slice(0, 5));
+  const topics = D.lessons.filter(l => l.group_id === g.id && l.topic && l.day.startsWith(mk) && !l.cancelled).sort((a, b) => a.day.localeCompare(b.day));
+  const all = grid.rows.flatMap(r => grid.days.map((_, i) => ({ status: r.cells[i] }))).filter(x => x.status), avg = L.attStats(all).pct;
+  printDoc(`<h1>Davomat hisoboti</h1><p class="pd-sub"><b>${esc(g.name)}</b> · ${monthLabel(mk)} · ${dayNames(g.days)}${g.time ? ' · ' + esc(g.time) : ''}</p>
+    <table class="pd-t"><thead><tr><th>№</th><th class="l">O'quvchi</th>${grid.days.map(d => `<th>${L.parseYmd(d).getDate()}<br><small>${L.WDS[L.parseYmd(d).getDay()].slice(0, 2)}</small></th>`).join('')}<th>Keldi</th><th>Kelmadi</th><th>%</th></tr></thead><tbody>
+    ${grid.rows.map((r, i) => `<tr><td>${i + 1}</td><td class="l">${esc(r.student.name)}</td>${r.cells.map(c => `<td>${PMARK[c] || ''}</td>`).join('')}<td>${r.stats.p + r.stats.l}</td><td>${r.stats.a}</td><td><b>${r.stats.pct === null ? '' : r.stats.pct + '%'}</b></td></tr>`).join('')}</tbody></table>
+    <p class="pd-leg">✓ keldi · K kechikdi · S sababli · ✗ kelmadi · bo'sh: belgilanmagan.${cancelled.length ? ` Bekor qilingan darslar: ${cancelled.join(', ')}.` : ''} O'tilgan darslar: ${grid.days.length}. O'rtacha davomat: <b>${avg === null ? '—' : avg + '%'}</b></p>
+    ${topics.length ? `<p class="pd-leg"><b>Dars mavzulari:</b> ${topics.map(t => `${fmtDate(t.day).slice(0, 5)} — ${esc(t.topic)}`).join('; ')}</p>` : ''}`, true);
+}
+function pdfStudent(s, mk) {
+  const g = gmap().get(s.group_id), rows = D.attendance.filter(a => a.student_id === s.id && a.day.startsWith(mk)).sort((a, b) => a.day.localeCompare(b.day)), st = L.attStats(rows), bal = L.monthBalance(s, g, D.payments, mk);
+  printDoc(`<h1>Davomat — ${esc(s.name)}</h1><p class="pd-sub">${esc(g?.name || 'Guruhsiz')} · ${monthLabel(mk)}</p>
+    <table class="pd-t"><thead><tr><th>Sana</th><th class="l">Kun</th><th class="l">Holat</th></tr></thead><tbody>
+    ${rows.map(a => `<tr><td>${fmtDate(a.day)}</td><td class="l">${L.WD[L.parseYmd(a.day).getDay()]}</td><td class="l">${PMARK[a.status]} ${L.STATUS[a.status]}</td></tr>`).join('') || '<tr><td colspan="3">Bu oyda belgi yo\'q</td></tr>'}</tbody></table>
+    <p class="pd-leg">Keldi: <b>${st.p}</b> · Kechikdi: <b>${st.l}</b> · Sababli: <b>${st.e}</b> · Kelmadi: <b>${st.a}</b> · Davomat: <b>${st.pct === null ? '—' : st.pct + '%'}</b></p>
+    <p class="pd-leg">${monthLabel(mk)} to'lovi: kerak ${money(bal.due)}, to'langan ${money(bal.paid)}, qolgan ${money(bal.left)}.</p>`);
+}
+actions.pdfGroup = async el => { await load(); const g = D.groups.find(x => x.id === (el.dataset.id || ST.rg)) || D.groups.find(x => x.active) || D.groups[0]; if (g) pdfGroup(g, mkNow()); };
+actions.pdfStudent = async el => { await load(); const s = D.students.find(x => x.id === el.dataset.id); if (s) pdfStudent(s, mkNow()); };
+
 // ───────── router ─────────
 const ROUTES = [[/^\/?$/, dashboard], [/^\/groups$/, groupsView], [/^\/groups\/([^/]+)$/, groupView], [/^\/students$/, studentsView], [/^\/students\/([^/]+)$/, studentView],
-  [/^\/attendance$/, attendanceView], [/^\/payments$/, paymentsView], [/^\/schedule$/, scheduleView], [/^\/reports$/, reportsView], [/^\/me(?:\/([^/]+))?$/, portalView]];
+  [/^\/attendance$/, attendanceView], [/^\/payments$/, paymentsView], [/^\/watch$/, watchView], [/^\/schedule$/, scheduleView], [/^\/reports$/, reportsView], [/^\/me(?:\/([^/]+))?$/, portalView]];
 let token = 0;
 export async function render() {
   const my = ++token, raw = location.hash.slice(1) || '/', [path, qs] = raw.split('?');
@@ -441,3 +611,5 @@ export async function render() {
 actions.retry = () => { invalidate(); render(); };
 window.addEventListener('hashchange', render);
 export const ready = initStore().then(() => render());
+
+export const __test = { setImp: v => { IMP = v; }, draw: () => drawImp(), invalidate };

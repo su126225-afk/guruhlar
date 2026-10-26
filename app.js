@@ -131,7 +131,7 @@ async function groupsView() {
     }).join('') || '<div class="empty">Hali guruh yo\'q. «Yangi guruh» tugmasini bosing.</div>'}</div></div>`;
 }
 actions.groupEdit = async el => {
-  await load(); const g = D.groups.find(x => x.id === el?.dataset?.id) || { name: '', price: '', days: [1, 3, 5], time: '18:00', pay_day: 5, note: '', active: true };
+  GF = []; await load(); const g = D.groups.find(x => x.id === el?.dataset?.id) || { name: '', price: '', days: [1, 3, 5], time: '18:00', pay_day: 5, note: '', active: true };
   modal(`<h2>${g.id ? 'Guruhni tahrirlash' : 'Yangi guruh'}</h2>
     <label class="lbl">Guruh nomi</label><input class="inp" id="gName" value="${esc(g.name)}" placeholder="Masalan: IELTS 6.5 (kechki)">
     <div class="two"><div><label class="lbl">Oylik narx (so'm)</label><input class="inp" id="gPrice" inputmode="numeric" value="${g.price}" placeholder="600000"></div>
@@ -140,6 +140,10 @@ actions.groupEdit = async el => {
     <label class="lbl">To'lov muddati (har oyning nechanchi kuni)</label><input class="inp" id="gPay" inputmode="numeric" value="${g.pay_day}" style="max-width:120px">
     <label class="lbl">Izoh</label><input class="inp" id="gNote" value="${esc(g.note)}">
     <label class="chip ${g.active ? 'on' : ''} dchip" style="margin-top:14px"><input type="checkbox" id="gActive" data-in="dayTog" ${g.active ? 'checked' : ''}>Faol guruh</label>
+    ${g.id ? '' : `<div class="panel" style="padding:14px;margin-top:14px"><b>O'quvchilarni shu yerda qo'shish</b> <small class="muted">(ixtiyoriy)</small>
+      <label class="lbl">Excel fayldan</label><input class="inp" type="file" id="gFile" accept=".xlsx,.xls" multiple data-in="gFile"><div id="gFileInfo" class="muted sm"></div>
+      <label class="lbl">yoki matn ro'yxatidan <small class="muted">(har qatorda: Ism Familiya; telefon)</small></label>
+      <textarea class="inp" id="gList" rows="4" placeholder="Aliyev Vali; 90 123 45 67\nKarimova Madina"></textarea></div>`}
     <div class="err" id="mErr"></div>
     <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn" data-act="closeModal">Bekor qilish</button><button class="btn primary" data-act="groupSave" data-id="${g.id || ''}">Saqlash</button></div>`);
 };
@@ -149,8 +153,21 @@ actions.groupSave = async el => {
   if (!name) { $('#mErr').textContent = 'Guruh nomini yozing'; return; }
   if (!(price >= 0) || $('#gPrice').value.trim() === '') { $('#mErr').textContent = "Oylik narxni raqam bilan yozing"; return; }
   const old = D.groups.find(x => x.id === el.dataset.id) || {};
-  await store.save('groups', { ...old, id: el.dataset.id || undefined, name, price, time: $('#gTime').value.trim(), pay_day: Math.min(28, Math.max(1, Number($('#gPay').value) || 1)), note: $('#gNote').value.trim(), active: $('#gActive').checked, days: $$('#modal .dchip input[value]').filter(i => i.checked && i.value !== undefined && i.id !== 'gActive').map(i => Number(i.value)) });
-  closeModal(); invalidate(); toast('Saqlandi', 'ok'); render();
+  const list = el.dataset.id ? [] : [...GF, ...($('#gList')?.value || '').split('\n').map(l => l.trim()).filter(Boolean).map(l => { const [n, p] = l.split(/[;\t]/); return { name: (n || '').replace(/\s+/g, ' ').trim(), parent_phone: L.formatPhone(p || '') }; }).filter(x => x.name)];
+  el.disabled = true;
+  const saved = await store.save('groups', { ...old, id: el.dataset.id || undefined, name, price, time: $('#gTime').value.trim(), pay_day: Math.min(28, Math.max(1, Number($('#gPay').value) || 1)), note: $('#gNote').value.trim(), active: $('#gActive').checked, days: $$('#modal .dchip input[value]').filter(i => i.checked && i.value !== undefined && i.id !== 'gActive').map(i => Number(i.value)) });
+  let msg = 'Saqlandi';
+  if (list.length && saved?.id) { try { D.groups.push(saved); const r = await makeStudents(saved, list); msg = `Guruh saqlandi, ${r.added} ta o'quvchi qo'shildi${r.skipped ? ` (${r.skipped} ta takror o'tkazildi)` : ''}`; } catch (e) { msg = "Guruh saqlandi, lekin o'quvchilar qo'shilmadi: " + e.message; } }
+  closeModal(); invalidate(); toast(msg, 'ok'); render();
+};
+let GF = [];
+inputs.gFile = async el => {
+  GF = []; const info = $('#gFileInfo');
+  try {
+    const X = await loadSheetJS();
+    for (const f of [...el.files]) { const wb = X.read(await f.arrayBuffer(), { type: 'array' }); for (const sn of wb.SheetNames) { const r = L.parseRegister(X.utils.sheet_to_json(wb.Sheets[sn], { header: 1, defval: null, raw: true })); if (!r.error) GF.push(...r.students); } }
+    info.textContent = GF.length ? `${GF.length} ta o'quvchi topildi — «Saqlash» bosilganda qo'shiladi` : "Fayldan o'quvchi topilmadi";
+  } catch (e) { info.textContent = e.message; }
 };
 actions.groupDel = async el => {
   if (await confirmBox("Guruhni o'chirish", "Guruh o'chadi, o'quvchilar esa guruhsiz qoladi (ularning davomati va to'lovlari saqlanadi). Davom etasizmi?", "O'chirish", true)) { await store.remove('groups', el.dataset.id); invalidate(); toast("O'chirildi", 'ok'); render(); }
@@ -176,8 +193,8 @@ const MARK = { p: '✓', a: '✗', e: 'С', l: '⏰' };
 function gridHtml(grid) {
   if (!grid.days.length) return '<div class="empty">Bu oyda dars kunlari yo\'q.</div>';
   return `<div class="tablewrap"><table class="agrid"><thead><tr><th>Ism</th>${grid.days.map(d => `<th class="c">${L.parseYmd(d).getDate()}</th>`).join('')}<th class="c">%</th></tr></thead><tbody>
-    ${grid.rows.map(r => `<tr><td>${esc(r.student.name)}</td>${r.cells.map(c => `<td class="c st-${c || 'n'}">${MARK[c] || '·'}</td>`).join('')}<td class="c">${pctBadge(r.stats.pct)}</td></tr>`).join('')}</tbody></table></div>
-    <p class="muted sm">✓ keldi · ✗ kelmadi · С sababli · ⏰ kechikdi · · belgilanmagan. Bekor qilingan darslar ko'rsatilmaydi.</p>`;
+    ${grid.rows.map(r => `<tr><td>${esc(r.student.name)}</td>${r.cells.map((c, i) => `<td class="c st-${c || 'n'}">${MARK[c] || '·'}${r.hw?.[i] === 'n' ? '<sup class="flag" title="Vazifa bajarmadi">V</sup>' : ''}${r.beh?.[i] === 'b' ? '<sup class="flag" title="Tartib yomon">T</sup>' : ''}</td>`).join('')}<td class="c">${pctBadge(r.stats.pct)}</td></tr>`).join('')}</tbody></table></div>
+    <p class="muted sm">✓ keldi · ✗ kelmadi · С sababli · ⏰ kechikdi · · belgilanmagan. <sup class="flag">V</sup> uyga vazifa bajarilmagan · <sup class="flag">T</sup> tartib yomon. Bekor qilingan darslar ko'rsatilmaydi.</p>`;
 }
 
 // ───────── o'quvchilar ─────────
@@ -248,7 +265,7 @@ async function studentView(id) {
     ${months.map(m => { const b = L.monthBalance(s, g, D.payments, m); return `<tr><td>${monthLabel(m)}</td><td class="r">${money(b.due)}</td><td class="r">${money(b.paid)}</td><td class="r ${b.left ? 'bad-t' : ''}">${b.left ? money(b.left) : '—'}</td><td class="r">${payBadge(b.status)} ${b.left ? `<button class="btn sm" data-act="payAdd" data-id="${s.id}" data-m="${m}">+</button>` : ''}</td></tr>`; }).join('')}</tbody></table></div>
     <h2 class="h2 mt">To'lovlar tarixi</h2>${payTable(pays, false)}
     <div class="row between wrapx mt"><h2 class="h2">Davomat (oxirgi 30 ta belgi)</h2><div class="row wrapx">${monthPicker(mkNow())}<button class="btn sm" data-act="pdfStudent" data-id="${s.id}">${icon('download', 14)} PDF (${monthLabel(mkNow())})</button></div></div>
-    <div class="chips">${att.slice(0, 30).map(a => `<span class="dot st-${a.status}" title="${fmtDate(a.day)} · ${L.STATUS[a.status]}">${fmtDate(a.day).slice(0, 5)} ${MARK[a.status]}</span>`).join('') || '<span class="muted">Hali belgilanmagan.</span>'}</div>
+    <div class="chips">${att.slice(0, 30).map(a => `<span class="dot st-${a.status}" title="${fmtDate(a.day)} · ${L.STATUS[a.status]}">${fmtDate(a.day).slice(0, 5)} ${MARK[a.status]}${a.hw === 'n' ? ' V' : ''}${a.beh === 'b' ? ' T' : ''}</span>`).join('') || '<span class="muted">Hali belgilanmagan.</span>'}</div>
     <div style="margin-top:28px"><button class="btn danger" data-act="studentDel" data-id="${s.id}">${icon('trash', 14)} O'quvchini o'chirish</button></div></div>`;
 }
 actions.copy = el => copyText(el.dataset.t, 'Havola nusxalandi');
@@ -290,7 +307,7 @@ function attState() {
 const attHash = (g, d) => `#/attendance?g=${g}&d=${d}`;
 function attBody(g, d) {
   const sts = D.students.filter(s => s.group_id === g.id && s.active && !L.frozenOn(s, d) && L.monthOf(s.joined) <= L.monthOf(d)).sort((a, b) => a.name.localeCompare(b.name));
-  const les = D.lessons.find(l => l.group_id === g.id && l.day === d) || {}, map = new Map(D.attendance.filter(a => a.day === d).map(a => [a.student_id, a.status]));
+  const les = D.lessons.find(l => l.group_id === g.id && l.day === d) || {}, map = new Map(D.attendance.filter(a => a.day === d).map(a => [a.student_id, a.status])), ex = new Map(D.attendance.filter(a => a.day === d).map(a => [a.student_id, a]));
   const cnt = L.attStats(sts.map(s => ({ status: map.get(s.id) })).filter(x => x.status));
   const offDay = !(g.days || []).includes(L.parseYmd(d).getDay());
   return `${offDay ? `<div class="note">Bu kun (${L.WD[L.parseYmd(d).getDay()]}) guruhning dars kuni emas (${dayNames(g.days)}). Baribir belgilashingiz mumkin.</div>` : ''}
@@ -298,7 +315,7 @@ function attBody(g, d) {
       <input class="inp" id="attTopic" data-in="attTopic" style="max-width:340px" placeholder="Dars mavzusi / uy vazifasi (ixtiyoriy)" value="${esc(les.topic || '')}"></div></div>
     ${les.cancelled ? '<div class="empty" style="margin-top:14px">Dars bekor qilingan, davomat hisobga olinmaydi.</div>' : `
     <div class="row between wrapx" style="margin:16px 0 10px"><span class="muted">${cnt.p} keldi · ${cnt.l} kechikdi · ${cnt.a} kelmadi · ${cnt.e} sababli · ${sts.length - cnt.total} belgilanmagan</span><button class="btn sm" data-act="attAll">${icon('check', 14)} Hammasi keldi</button></div>
-    ${sts.map(s => { const v = map.get(s.id) || ''; return `<div class="arow"><div class="aname">${esc(s.name)}</div><div class="seg">${['p', 'l', 'e', 'a'].map(k => `<button class="stbtn st-${k} ${v === k ? 'on' : ''}" data-act="attSet" data-s="${s.id}" data-v="${k}">${L.STATUS[k]}</button>`).join('')}</div></div>`; }).join('') || '<div class="empty">Bu guruhda o\'quvchi yo\'q.</div>'}`}`;
+    ${sts.map(s => { const v = map.get(s.id) || ''; return `<div class="arow"><div class="aname">${esc(s.name)}</div><div class="seg">${['p', 'l', 'e', 'a'].map(k => `<button class="stbtn st-${k} ${v === k ? 'on' : ''}" data-act="attSet" data-s="${s.id}" data-v="${k}">${L.STATUS[k]}</button>`).join('')}</div>${v ? `<div class="seg sub"><button class="stbtn st-hy ${ex.get(s.id)?.hw === 'y' ? 'on' : ''}" data-act="attHw" data-s="${s.id}" data-v="y">Vazifa ✓</button><button class="stbtn st-hn ${ex.get(s.id)?.hw === 'n' ? 'on' : ''}" data-act="attHw" data-s="${s.id}" data-v="n">Vazifa ✗</button><button class="stbtn st-hy ${ex.get(s.id)?.beh === 'g' ? 'on' : ''}" data-act="attBeh" data-s="${s.id}" data-v="g">Tartib yaxshi</button><button class="stbtn st-hn ${ex.get(s.id)?.beh === 'b' ? 'on' : ''}" data-act="attBeh" data-s="${s.id}" data-v="b">Tartib yomon</button></div>` : ''}</div>`; }).join('') || '<div class="empty">Bu guruhda o\'quvchi yo\'q.</div>'}`}`;
 }
 async function attendanceView() {
   await load(); const { g, d } = attState();
@@ -322,6 +339,13 @@ actions.attSet = async el => {
   else { await store.saveAttendance([{ student_id: sid, day: d, status: v }]); if (cur) cur.status = v; else D.attendance.push({ student_id: sid, day: d, status: v }); }
   refreshAtt();
 };
+async function attExtra(el, field) {
+  const { d } = attState(), sid = el.dataset.s, v = el.dataset.v, cur = D.attendance.find(a => a.student_id === sid && a.day === d); if (!cur) return;
+  const nv = cur[field] === v ? null : v;
+  await store.saveAttendance([{ student_id: sid, day: d, status: cur.status, [field]: nv }]); cur[field] = nv; refreshAtt();
+}
+actions.attHw = el => attExtra(el, 'hw');
+actions.attBeh = el => attExtra(el, 'beh');
 actions.attAll = async () => {
   const { g, d } = attState(), have = new Set(D.attendance.filter(a => a.day === d).map(a => a.student_id));
   const recs = D.students.filter(s => s.group_id === g.id && s.active && !L.frozenOn(s, d) && L.monthOf(s.joined) <= L.monthOf(d) && !have.has(s.id)).map(s => ({ student_id: s.id, day: d, status: 'p' }));
@@ -388,8 +412,8 @@ actions.csvPay = async () => {
 actions.csvAtt = async () => {
   await load(); const mk = mkNow(), rg = D.groups.find(g => g.id === ST.rg) || D.groups.find(g => g.active) || D.groups[0]; if (!rg) return;
   const grid = L.attendanceGrid(rg, roster(rg.id, mk), D.attendance, D.lessons, mk);
-  const lines = [[`Ism`, ...grid.days.map(fmtDate), 'Davomat %'].join(';')];
-  grid.rows.forEach(r => lines.push([r.student.name, ...r.cells.map(c => L.STATUS[c] || ''), r.stats.pct ?? ''].map(L.csvCell).join(';')));
+  const lines = [[`Ism`, ...grid.days.map(fmtDate), 'Davomat %', 'Vazifa bajarmagan', 'Tartib yomon'].join(';')];
+  grid.rows.forEach(r => lines.push([r.student.name, ...r.cells.map((c, i) => [L.STATUS[c] || '', r.hw[i] === 'n' ? 'vazifa yo\'q' : '', r.beh[i] === 'b' ? 'tartib yomon' : ''].filter(Boolean).join(' + ')), r.stats.pct ?? '', r.hw.filter(x => x === 'n').length, r.beh.filter(x => x === 'b').length].map(L.csvCell).join(';')));
   download(`davomat-${rg.name}-${mk}.csv`, lines.join('\n'));
 };
 
@@ -418,7 +442,7 @@ async function portalView(codeParam) {
     <div class="tablewrap"><table><thead><tr><th>Oy</th><th class="r">Kerak</th><th class="r">To'langan</th><th class="r">Qolgan</th><th>Holat</th></tr></thead><tbody>
     ${months.map(m => { const b = L.monthBalance(s, g, pays, m); return `<tr><td>${monthLabel(m)}</td><td class="r">${money(b.due)}</td><td class="r">${money(b.paid)}</td><td class="r ${b.left ? 'bad-t' : ''}">${b.left ? money(b.left) : '—'}</td><td>${payBadge(b.status)}</td></tr>`; }).join('')}</tbody></table></div>
     <h2 class="h2 mt">Oxirgi davomat</h2>
-    <div class="chips">${att.slice(0, 40).map(a => `<span class="dot st-${a.status}" title="${L.STATUS[a.status]}">${fmtDate(a.day).slice(0, 5)} ${MARK[a.status]} ${L.STATUS[a.status]}</span>`).join('') || '<span class="muted">Hali belgilanmagan.</span>'}</div>
+    <div class="chips">${att.slice(0, 40).map(a => `<span class="dot st-${a.status}" title="${L.STATUS[a.status]}">${fmtDate(a.day).slice(0, 5)} ${MARK[a.status]} ${L.STATUS[a.status]}${a.hw === 'n' ? ' · vazifa ✗' : a.hw === 'y' ? ' · vazifa ✓' : ''}${a.beh === 'b' ? ' · tartib yomon' : ''}</span>`).join('') || '<span class="muted">Hali belgilanmagan.</span>'}</div>
     ${cancelled.size ? `<p class="muted sm mt">Bekor qilingan darslar: ${[...cancelled].sort().reverse().slice(0, 6).map(fmtDate).join(', ')}</p>` : ''}
     <p class="muted sm mt">Savollar bo'lsa: ${esc(CONFIG.teacher)} · ${esc(CONFIG.telegram)} · ${esc(CONFIG.phone)}</p></div>`;
 }
@@ -576,17 +600,17 @@ function pdfGroup(g, mk) {
   const topics = D.lessons.filter(l => l.group_id === g.id && l.topic && l.day.startsWith(mk) && !l.cancelled).sort((a, b) => a.day.localeCompare(b.day));
   const all = grid.rows.flatMap(r => grid.days.map((_, i) => ({ status: r.cells[i] }))).filter(x => x.status), avg = L.attStats(all).pct;
   printDoc(`<h1>Davomat hisoboti</h1><p class="pd-sub"><b>${esc(g.name)}</b> · ${monthLabel(mk)} · ${dayNames(g.days)}${g.time ? ' · ' + esc(g.time) : ''}</p>
-    <table class="pd-t"><thead><tr><th>№</th><th class="l">O'quvchi</th>${grid.days.map(d => `<th>${L.parseYmd(d).getDate()}<br><small>${L.WDS[L.parseYmd(d).getDay()].slice(0, 2)}</small></th>`).join('')}<th>Keldi</th><th>Kelmadi</th><th>%</th></tr></thead><tbody>
-    ${grid.rows.map((r, i) => `<tr><td>${i + 1}</td><td class="l">${esc(r.student.name)}</td>${r.cells.map(c => `<td>${PMARK[c] || ''}</td>`).join('')}<td>${r.stats.p + r.stats.l}</td><td>${r.stats.a}</td><td><b>${r.stats.pct === null ? '' : r.stats.pct + '%'}</b></td></tr>`).join('')}</tbody></table>
-    <p class="pd-leg">✓ keldi · K kechikdi · S sababli · ✗ kelmadi · bo'sh: belgilanmagan.${cancelled.length ? ` Bekor qilingan darslar: ${cancelled.join(', ')}.` : ''} O'tilgan darslar: ${grid.days.length}. O'rtacha davomat: <b>${avg === null ? '—' : avg + '%'}</b></p>
+    <table class="pd-t"><thead><tr><th>№</th><th class="l">O'quvchi</th>${grid.days.map(d => `<th>${L.parseYmd(d).getDate()}<br><small>${L.WDS[L.parseYmd(d).getDay()].slice(0, 2)}</small></th>`).join('')}<th>Keldi</th><th>Kelmadi</th><th>Vazifa ✗</th><th>Tartib ✗</th><th>%</th></tr></thead><tbody>
+    ${grid.rows.map((r, i) => `<tr><td>${i + 1}</td><td class="l">${esc(r.student.name)}</td>${r.cells.map((c, j) => `<td>${PMARK[c] || ''}${r.hw[j] === 'n' ? '<sup>V</sup>' : ''}${r.beh[j] === 'b' ? '<sup>T</sup>' : ''}</td>`).join('')}<td>${r.stats.p + r.stats.l}</td><td>${r.stats.a}</td><td>${r.hw.filter(x => x === 'n').length || ''}</td><td>${r.beh.filter(x => x === 'b').length || ''}</td><td><b>${r.stats.pct === null ? '' : r.stats.pct + '%'}</b></td></tr>`).join('')}</tbody></table>
+    <p class="pd-leg">✓ keldi · K kechikdi · S sababli · ✗ kelmadi · <sup>V</sup> uyga vazifa bajarilmagan · <sup>T</sup> tartib yomon · bo'sh: belgilanmagan.${cancelled.length ? ` Bekor qilingan darslar: ${cancelled.join(', ')}.` : ''} O'tilgan darslar: ${grid.days.length}. O'rtacha davomat: <b>${avg === null ? '—' : avg + '%'}</b></p>
     ${topics.length ? `<p class="pd-leg"><b>Dars mavzulari:</b> ${topics.map(t => `${fmtDate(t.day).slice(0, 5)} — ${esc(t.topic)}`).join('; ')}</p>` : ''}`, true);
 }
 function pdfStudent(s, mk) {
   const g = gmap().get(s.group_id), rows = D.attendance.filter(a => a.student_id === s.id && a.day.startsWith(mk)).sort((a, b) => a.day.localeCompare(b.day)), st = L.attStats(rows), bal = L.monthBalance(s, g, D.payments, mk);
   printDoc(`<h1>Davomat — ${esc(s.name)}</h1><p class="pd-sub">${esc(g?.name || 'Guruhsiz')} · ${monthLabel(mk)}</p>
-    <table class="pd-t"><thead><tr><th>Sana</th><th class="l">Kun</th><th class="l">Holat</th></tr></thead><tbody>
-    ${rows.map(a => `<tr><td>${fmtDate(a.day)}</td><td class="l">${L.WD[L.parseYmd(a.day).getDay()]}</td><td class="l">${PMARK[a.status]} ${L.STATUS[a.status]}</td></tr>`).join('') || '<tr><td colspan="3">Bu oyda belgi yo\'q</td></tr>'}</tbody></table>
-    <p class="pd-leg">Keldi: <b>${st.p}</b> · Kechikdi: <b>${st.l}</b> · Sababli: <b>${st.e}</b> · Kelmadi: <b>${st.a}</b> · Davomat: <b>${st.pct === null ? '—' : st.pct + '%'}</b></p>
+    <table class="pd-t"><thead><tr><th>Sana</th><th class="l">Kun</th><th class="l">Holat</th><th class="l">Uyga vazifa</th><th class="l">Tartib</th></tr></thead><tbody>
+    ${rows.map(a => `<tr><td>${fmtDate(a.day)}</td><td class="l">${L.WD[L.parseYmd(a.day).getDay()]}</td><td class="l">${PMARK[a.status]} ${L.STATUS[a.status]}</td><td class="l">${a.hw === 'y' ? 'Bajardi' : a.hw === 'n' ? '<b>Bajarmadi</b>' : ''}</td><td class="l">${a.beh === 'g' ? 'Yaxshi' : a.beh === 'b' ? '<b>Yomon</b>' : ''}</td></tr>`).join('') || '<tr><td colspan="5">Bu oyda belgi yo\'q</td></tr>'}</tbody></table>
+    <p class="pd-leg">Keldi: <b>${st.p}</b> · Kechikdi: <b>${st.l}</b> · Sababli: <b>${st.e}</b> · Kelmadi: <b>${st.a}</b> · Davomat: <b>${st.pct === null ? '—' : st.pct + '%'}</b> · Vazifa bajarmagan: <b>${rows.filter(a => a.hw === 'n').length}</b> · Tartib yomon: <b>${rows.filter(a => a.beh === 'b').length}</b></p>
     <p class="pd-leg">${monthLabel(mk)} to'lovi: kerak ${money(bal.due)}, to'langan ${money(bal.paid)}, qolgan ${money(bal.left)}.</p>`);
 }
 actions.pdfGroup = async el => { await load(); const g = D.groups.find(x => x.id === (el.dataset.id || ST.rg)) || D.groups.find(x => x.active) || D.groups[0]; if (g) pdfGroup(g, mkNow()); };

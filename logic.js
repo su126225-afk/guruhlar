@@ -76,6 +76,8 @@ export const reminderText = (student, group, mk, left, teacher = '') =>
   `Assalomu alaykum! ${student.name} uchun ${monthLabel(mk)} oyi kurs to'lovi (${money(left)}) hali to'lanmagan. Iltimos, to'lovni amalga oshirishingizni so'raymiz. Rahmat!${teacher ? ' — ' + teacher : ''}`;
 
 export const STATUS = { p: 'Keldi', a: 'Kelmadi', e: 'Sababli', l: 'Kechikdi' };
+export const HW = { y: 'Vazifa bajardi', n: 'Vazifa bajarmadi' };
+export const BEH = { g: 'Tartib yaxshi', b: 'Tartib yomon' };
 
 /** Guruh+oy bo'yicha jadval: o'quvchi qatorlari × dars kunlari ustunlari. */
 export function attendanceGrid(group, students, attendance, lessons, mk) {
@@ -84,7 +86,8 @@ export function attendanceGrid(group, students, attendance, lessons, mk) {
   const cancelled = new Set(lessons.filter(l => l.group_id === group.id && l.cancelled).map(l => l.day));
   const held = days.filter(d => !cancelled.has(d));
   const map = new Map(attendance.map(a => [a.student_id + '|' + a.day, a.status]));
-  return { days: held, rows: students.map(s => ({ student: s, cells: held.map(d => map.get(s.id + '|' + d) || ''), stats: attStats(held.map(d => ({ status: map.get(s.id + '|' + d) })).filter(x => x.status)) })) };
+  const hwm = new Map(attendance.map(a => [a.student_id + '|' + a.day, a.hw || ''])), bhm = new Map(attendance.map(a => [a.student_id + '|' + a.day, a.beh || '']));
+  return { days: held, rows: students.map(s => ({ student: s, cells: held.map(d => map.get(s.id + '|' + d) || ''), hw: held.map(d => hwm.get(s.id + '|' + d) || ''), beh: held.map(d => bhm.get(s.id + '|' + d) || ''), stats: attStats(held.map(d => ({ status: map.get(s.id + '|' + d) })).filter(x => x.status)) })) };
 }
 
 // ───────── Excel ro'yxatdan o'quvchilarni olish ─────────

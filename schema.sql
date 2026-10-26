@@ -60,6 +60,9 @@ create table if not exists mg_payments (
   note       text not null default '',
   created_at timestamptz not null default now()
 );
+-- Uyga vazifa (y = bajardi, n = bajarmadi) va tartib (g = yaxshi, b = yomon). Eski bazada ham xavfsiz ishlaydi.
+alter table mg_attendance add column if not exists hw  text check (hw  in ('y','n'));
+alter table mg_attendance add column if not exists beh text check (beh in ('g','b'));
 create index if not exists mg_att_student on mg_attendance(student_id, day);
 create index if not exists mg_pay_student on mg_payments(student_id, month);
 
@@ -87,7 +90,7 @@ begin
   r := jsonb_build_object(
     'student', jsonb_build_object('id', s.id, 'name', s.name, 'joined', s.joined, 'price', s.price, 'freezes', s.freezes),
     'group',   case when g.id is null then null else jsonb_build_object('name', g.name, 'price', g.price, 'days', g.days, 'time', g.time, 'pay_day', g.pay_day) end,
-    'attendance', coalesce((select jsonb_agg(jsonb_build_object('day', a.day, 'status', a.status) order by a.day desc)
+    'attendance', coalesce((select jsonb_agg(jsonb_build_object('day', a.day, 'status', a.status, 'hw', a.hw, 'beh', a.beh) order by a.day desc)
                             from mg_attendance a where a.student_id = s.id and a.day >= current_date - 150), '[]'::jsonb),
     'payments',   coalesce((select jsonb_agg(jsonb_build_object('month', p.month, 'amount', p.amount, 'paid_on', p.paid_on, 'method', p.method) order by p.paid_on desc)
                             from mg_payments p where p.student_id = s.id), '[]'::jsonb),

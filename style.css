@@ -173,3 +173,5 @@ button[disabled]{opacity:.35;pointer-events:none}
   #printArea .pd-foot{margin-top:18px;padding-top:8px;border-top:2px solid #000;text-align:center;font-size:11.5px}
   #printArea .pd-foot span{color:#444}
 }
+
+.arow .seg.sub{width:100%;padding-top:8px;border-top:1px dashed var(--border)}.arow .seg.sub .stbtn{font-size:12px;padding:6px 10px}.stbtn.on.st-hy{background:rgba(52,211,153,.2);border-color:var(--ok);color:var(--ok)}.stbtn.on.st-hn{background:rgba(251,113,133,.2);border-color:var(--bad);color:var(--bad)}.flag{color:var(--bad);font-weight:800;font-size:9px;margin-left:1px}

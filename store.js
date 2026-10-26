@@ -53,7 +53,7 @@ const local = {
   },
   async saveAttendance(recs) {
     const all = LS.get('attendance', []);
-    for (const r of recs) { const i = all.findIndex(x => x.student_id === r.student_id && x.day === r.day); if (i >= 0) all[i].status = r.status; else all.push({ id: uid(), ...r }); }
+    for (const r of recs) { const i = all.findIndex(x => x.student_id === r.student_id && x.day === r.day); if (i >= 0) Object.assign(all[i], r); else all.push({ id: uid(), ...r }); }
     LS.set('attendance', all);
   },
   async delAttendance(student_id, day) { LS.set('attendance', LS.get('attendance', []).filter(x => !(x.student_id === student_id && x.day === day))); },
